@@ -1,0 +1,139 @@
+name: ${COMPOSE_PROJECT_NAME}
+
+x-airflow-environment: &airflow-environment
+    AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+    AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_ROLE}:${AIRFLOW_DB_PASSWORD_URLENCODED}@postgres:5432/${AIRFLOW_DB_NAME}
+    AIRFLOW__CELERY__BROKER_URL: redis://project-redis:6379/0
+    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://${AIRFLOW_DB_ROLE}:${AIRFLOW_DB_PASSWORD_URLENCODED}@postgres:5432/${AIRFLOW_DB_NAME}
+    AIRFLOW__API__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080
+
+x-airflow-common: &airflow-common
+  image: conductor-airflow:latest
+  environment: *airflow-environment
+  volumes:
+    - dags:/opt/airflow/dags
+    - logs:/opt/airflow/logs
+  depends_on:
+    project-redis:
+      condition: service_healthy
+  labels:
+    - conductor.managed=true
+    - conductor.project_id=${CONDUCTOR_PROJECT_ID}
+    - conductor.template_version=${CONDUCTOR_TEMPLATE_VERSION}
+    - traefik.enable=false
+
+services:
+  project-redis:
+    image: redis:8.6.4-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    labels:
+      - conductor.managed=true
+      - conductor.project_id=${CONDUCTOR_PROJECT_ID}
+      - conductor.template_version=${CONDUCTOR_TEMPLATE_VERSION}
+      - traefik.enable=false
+
+  airflow-init:
+    <<: *airflow-common
+    restart: "no"
+    environment:
+      <<: *airflow-environment
+      AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER}
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD}
+      AIRFLOW_DEV_USER: ${AIRFLOW_DEV_USER}
+      AIRFLOW_DEV_PASSWORD: ${AIRFLOW_DEV_PASSWORD}
+      AIRFLOW_VIEWER_USER: ${AIRFLOW_VIEWER_USER}
+      AIRFLOW_VIEWER_PASSWORD: ${AIRFLOW_VIEWER_PASSWORD}
+      AIRFLOW_INTEGRATION_USER: ${AIRFLOW_INTEGRATION_USER}
+      AIRFLOW_INTEGRATION_PASSWORD: ${AIRFLOW_INTEGRATION_PASSWORD}
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - >-
+        airflow db migrate &&
+        airflow users create --username "$$AIRFLOW_ADMIN_USER" --password "$$AIRFLOW_ADMIN_PASSWORD" --firstname Admin --lastname User --role Admin --email admin@conductor.local &&
+        airflow users create --username "$$AIRFLOW_DEV_USER" --password "$$AIRFLOW_DEV_PASSWORD" --firstname Developer --lastname User --role User --email dev@conductor.local &&
+        airflow users create --username "$$AIRFLOW_VIEWER_USER" --password "$$AIRFLOW_VIEWER_PASSWORD" --firstname Viewer --lastname User --role Viewer --email viewer@conductor.local &&
+        airflow users create --username "$$AIRFLOW_INTEGRATION_USER" --password "$$AIRFLOW_INTEGRATION_PASSWORD" --firstname Integration --lastname User --role Viewer --email integration@conductor.local
+
+  airflow-api-server:
+    <<: *airflow-common
+    command: airflow api-server --apps all
+    labels:
+      - conductor.managed=true
+      - conductor.project_id=${CONDUCTOR_PROJECT_ID}
+      - conductor.template_version=${CONDUCTOR_TEMPLATE_VERSION}
+      - traefik.enable=true
+      - traefik.docker.network=${COMPOSE_PROJECT_NAME}_default
+      - traefik.http.routers.conductor-${CONDUCTOR_PROJECT_ID}-airflow.rule=Host(`${AIRFLOW_EXTERNAL_HOST}`) && (PathPrefix(`/api/`) || PathPrefix(`/auth/`))
+      - traefik.http.routers.conductor-${CONDUCTOR_PROJECT_ID}-airflow.entrypoints=websecure
+      - traefik.http.services.conductor-${CONDUCTOR_PROJECT_ID}-airflow.loadbalancer.server.port=8080
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: airflow scheduler
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: airflow dag-processor
+
+  airflow-worker:
+    <<: *airflow-common
+    command: airflow celery worker
+
+  workspace-session-manager:
+    image: conductor-workspace-session-manager:latest
+    environment:
+      CONDUCTOR_PROJECT_ID: ${CONDUCTOR_PROJECT_ID}
+      CONDUCTOR_PROJECT_SLUG: ${PROJECT_SLUG}
+    volumes:
+      - workspaces:/workspace
+      - ide-user-data:/ide-data
+    labels:
+      - conductor.managed=true
+      - conductor.project_id=${CONDUCTOR_PROJECT_ID}
+      - conductor.template_version=${CONDUCTOR_TEMPLATE_VERSION}
+      - traefik.enable=true
+      - traefik.docker.network=${COMPOSE_PROJECT_NAME}_default
+      - traefik.http.routers.conductor-${CONDUCTOR_PROJECT_ID}-ide.rule=Host(`${AIRFLOW_EXTERNAL_HOST}`) && PathPrefix(`/ide/${PROJECT_SLUG}/`)
+      - traefik.http.routers.conductor-${CONDUCTOR_PROJECT_ID}-ide.entrypoints=websecure
+      - traefik.http.routers.conductor-${CONDUCTOR_PROJECT_ID}-ide.middlewares=conductor-${CONDUCTOR_PROJECT_ID}-ide-auth
+      - traefik.http.middlewares.conductor-${CONDUCTOR_PROJECT_ID}-ide-auth.forwardauth.address=http://fastapi:8000/api/v1/internal/ide/authorize
+      - traefik.http.middlewares.conductor-${CONDUCTOR_PROJECT_ID}-ide-auth.forwardauth.trustForwardHeader=true
+      - traefik.http.services.conductor-${CONDUCTOR_PROJECT_ID}-ide.loadbalancer.server.port=8080
+
+networks:
+  default:
+    name: ${COMPOSE_PROJECT_NAME}_default
+    internal: true
+    labels:
+      conductor.managed: "true"
+      conductor.project_id: ${CONDUCTOR_PROJECT_ID}
+      conductor.template_version: ${CONDUCTOR_TEMPLATE_VERSION}
+
+volumes:
+  dags:
+    labels:
+      conductor.managed: "true"
+      conductor.project_id: ${CONDUCTOR_PROJECT_ID}
+      conductor.template_version: ${CONDUCTOR_TEMPLATE_VERSION}
+  logs:
+    labels:
+      conductor.managed: "true"
+      conductor.project_id: ${CONDUCTOR_PROJECT_ID}
+      conductor.template_version: ${CONDUCTOR_TEMPLATE_VERSION}
+  workspaces:
+    labels:
+      conductor.managed: "true"
+      conductor.project_id: ${CONDUCTOR_PROJECT_ID}
+      conductor.template_version: ${CONDUCTOR_TEMPLATE_VERSION}
+  ide-user-data:
+    labels:
+      conductor.managed: "true"
+      conductor.project_id: ${CONDUCTOR_PROJECT_ID}
+      conductor.template_version: ${CONDUCTOR_TEMPLATE_VERSION}

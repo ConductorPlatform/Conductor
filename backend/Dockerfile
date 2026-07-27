@@ -30,6 +30,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 # Application code
 COPY app/ /app/app/
+COPY app/runtime_templates/ /app/app/runtime_templates/
 COPY alembic.ini /app/
 COPY alembic/ /app/alembic/
 
