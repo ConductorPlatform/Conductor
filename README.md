@@ -41,8 +41,8 @@ The following pieces are present in the codebase but are **not a working local p
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/ConductorPlatform/Conductor.git
-cd Conductor
+git clone https://github.com/ConductorPlatform/conductor-data-platform.git
+cd conductor-data-platform
 ```
 
 ### 2. Create local environment files
